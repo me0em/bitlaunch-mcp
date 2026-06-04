@@ -24,7 +24,7 @@ GPU inventory is Nvidia A40 (full cards and fractional vGPU slices), from ~$0.16
 ## Setup
 
 ```bash
-git clone https://github.com/<you>/bitlaunch-mcp.git
+git clone https://github.com/me0em/bitlaunch-mcp.git
 cd bitlaunch-mcp
 uv sync
 uv run pytest   # offline suite, no token needed
@@ -176,3 +176,7 @@ The live test always destroys the server in a `finally` block, even when asserti
 - **GPU driver install is best-effort.** Vultr's fractional vGPU slices may require GRID drivers that plain Ubuntu images don't ship. `create_server(wait=true)` reports `ready: true` only after `nvidia-smi` succeeds; if it times out, diagnose with `run_command(server_id, "nvidia-smi")` or pick a different plan.
 - **No persistent SSH sessions / interactive shells** — by design. Long work belongs in tmux jobs.
 - Domains/DNS, DDoS protection, resize/rebuild, and crypto top-ups are out of scope; manage those at https://app.bitlaunch.io.
+
+## License
+
+[WTFPL](LICENSE) — do what the fuck you want to.
