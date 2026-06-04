@@ -1,0 +1,221 @@
+"""FastMCP application: provisioning + remote execution tools.
+
+Dependency state lives in _state so tests can inject fakes.
+"""
+from __future__ import annotations
+
+import asyncio
+
+import asyncssh
+from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+
+from . import ssh
+from .client import DEFAULT_IMAGE_VERSION_ID, BitLaunchClient, BitLaunchError
+from .config import Config, load_config
+
+mcp = FastMCP("bitlaunch")
+
+_state: dict = {}
+
+
+def get_config() -> Config:
+    if "config" not in _state:
+        _state["config"] = load_config()
+    return _state["config"]
+
+
+def get_client() -> BitLaunchClient:
+    if "client" not in _state:
+        _state["client"] = BitLaunchClient(get_config().api_key)
+    return _state["client"]
+
+
+# Base tooling for every server; GPU plans additionally get a best-effort
+# NVIDIA driver install (skipped when the image already ships drivers).
+BASE_INIT_SCRIPT = """#!/bin/bash
+set -x
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y tmux git curl rsync
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+"""
+
+GPU_INIT_SCRIPT = BASE_INIT_SCRIPT + """
+if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi >/dev/null 2>&1; then
+  apt-get install -y ubuntu-drivers-common
+  DRIVER=$(ubuntu-drivers list --gpgpu 2>/dev/null \\
+    | grep -o 'nvidia-driver-[0-9]*-server' | sort -V | tail -1)
+  if [ -n "$DRIVER" ]; then
+    apt-get install -y "$DRIVER" "${DRIVER/driver/utils}"
+    reboot
+  fi
+fi
+"""
+
+
+def _is_gpu(size_id: str) -> bool:
+    return size_id.startswith("vcg-")
+
+
+@mcp.tool
+async def get_account() -> dict:
+    """Account balance (USD), current burn rate ($/hr) and server count/limit."""
+    return await get_client().get_account()
+
+
+@mcp.tool
+async def list_gpu_plans() -> list[dict]:
+    """GPU plans on Vultr with LIVE availability. A plan can only be created
+    in regions listed in its available_regions; an empty list means the plan
+    is out of stock everywhere right now."""
+    options = await get_client().get_create_options()
+    return BitLaunchClient.parse_plans(options, plan_type="gpu")
+
+
+@mcp.tool
+async def list_plans(plan_type: str | None = None) -> list[dict]:
+    """All Vultr plans. plan_type: 'standard' | 'cpu' | 'gpu' | None (all).
+    Cheap standard plans are useful for debugging the pipeline before
+    renting a GPU."""
+    options = await get_client().get_create_options()
+    return BitLaunchClient.parse_plans(options, plan_type=plan_type)
+
+
+async def _ensure_ssh_key(client: BitLaunchClient, cfg: Config) -> str:
+    """Generate local ed25519 key if missing, register it on BitLaunch once."""
+    pub = ssh.ensure_local_key(cfg.ssh_key_path)
+    for key in await client.list_ssh_keys():
+        if key.get("content", "").strip() == pub:
+            return key["id"]
+    created = await client.create_ssh_key("bitlaunch-mcp", pub)
+    return created["id"]
+
+
+async def _wait_ready(
+    client: BitLaunchClient, cfg: Config, server_id: str, gpu: bool,
+    timeout_s: int = 600,
+) -> dict:
+    """Poll until the server has an IP and SSH works (for GPU: nvidia-smi).
+    On timeout returns the server with ready=False — never destroys it."""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_s
+    delay = 5.0
+    server = await client.get_server(server_id)
+    while loop.time() < deadline:
+        server = await client.get_server(server_id)
+        if server["error_text"]:
+            raise ToolError(
+                f"Server {server_id} failed to provision: {server['error_text']}"
+            )
+        if server["ipv4"] and server["ipv4"] != "0.0.0.0":
+            check = "nvidia-smi" if gpu else "echo ok"
+            try:
+                res = await ssh.run_command(
+                    server["ipv4"], cfg.ssh_key_path, check, timeout_s=20
+                )
+                if res["exit_code"] == 0:
+                    return {**server, "ready": True}
+            except (OSError, asyncssh.Error):
+                pass  # not booted yet / mid-reboot after driver install
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.5, 30.0)
+    return {
+        **server,
+        "ready": False,
+        "note": (
+            "Server created but not SSH-ready within timeout. It is still "
+            "running (and billing). Check again with get_server/run_command, "
+            "or destroy_server to stop paying."
+        ),
+    }
+
+
+@mcp.tool
+async def create_server(
+    name: str,
+    size_id: str,
+    region_id: str,
+    image_version_id: str = DEFAULT_IMAGE_VERSION_ID,
+    wait: bool = True,
+) -> dict:
+    """Rent a Vultr server via BitLaunch. Billing starts immediately and
+    continues until destroy_server is called.
+
+    size_id/region_id come from list_gpu_plans/list_plans (use a region from
+    the plan's available_regions). Default image is Ubuntu 24.04. GPU plans
+    (vcg-*) get NVIDIA drivers installed automatically via init script; with
+    wait=true the call returns only when SSH works (and nvidia-smi for GPU),
+    up to 10 minutes."""
+    cfg = get_config()
+    client = get_client()
+
+    plans = BitLaunchClient.parse_plans(await client.get_create_options())
+    plan = next((p for p in plans if p["size_id"] == size_id), None)
+    if plan is None:
+        known = ", ".join(p["size_id"] for p in plans)
+        raise ToolError(f"Unknown size_id {size_id!r}. Known plans: {known}")
+
+    price = plan["cost_per_hour_usd"]
+    if price > cfg.max_cost_per_hour:
+        raise ToolError(
+            f"Plan {size_id} costs ${price}/hr which exceeds the limit of "
+            f"${cfg.max_cost_per_hour}/hr. Raise BITLAUNCH_MAX_COST_PER_HOUR "
+            f"to allow it."
+        )
+
+    servers = await client.list_servers()
+    if len(servers) >= cfg.max_servers:
+        raise ToolError(
+            f"Already running {len(servers)} servers — limit is "
+            f"{cfg.max_servers} (BITLAUNCH_MAX_SERVERS). Destroy one first."
+        )
+
+    account = await client.get_account()
+    if account["balance_usd"] < price * 24:
+        raise ToolError(
+            f"Balance ${account['balance_usd']} is less than 24h of "
+            f"{size_id} (${round(price * 24, 2)}). Top up at "
+            f"https://app.bitlaunch.io first."
+        )
+
+    key_id = await _ensure_ssh_key(client, cfg)
+    gpu = _is_gpu(size_id)
+    server = await client.create_server(
+        name=name,
+        size_id=size_id,
+        region_id=region_id,
+        image_version_id=image_version_id,
+        ssh_key_ids=[key_id],
+        init_script=GPU_INIT_SCRIPT if gpu else BASE_INIT_SCRIPT,
+    )
+    if wait:
+        return await _wait_ready(client, cfg, server["id"], gpu)
+    return server
+
+
+@mcp.tool
+async def get_server(server_id: str) -> dict:
+    """Server status, IP, uptime and accrued cost in USD."""
+    return await get_client().get_server(server_id)
+
+
+@mcp.tool
+async def list_servers() -> list[dict]:
+    """All servers on the account with per-server accrued cost."""
+    return await get_client().list_servers()
+
+
+@mcp.tool
+async def destroy_server(server_id: str) -> dict:
+    """Permanently delete a server. This stops billing. Unsaved data is lost —
+    download_file anything you need first."""
+    await get_client().destroy_server(server_id)
+    return {"destroyed": server_id}
+
+
+@mcp.tool
+async def restart_server(server_id: str) -> dict:
+    """Reboot a server (running tmux jobs are killed)."""
+    await get_client().restart_server(server_id)
+    return {"restarted": server_id}
