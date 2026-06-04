@@ -155,3 +155,12 @@ class BitLaunchClient:
 
     async def restart_server(self, server_id: str) -> None:
         await self._request("POST", f"/servers/{server_id}/restart")
+
+    async def list_ssh_keys(self) -> list[dict]:
+        d = await self._request("GET", "/ssh-keys")
+        return (d or {}).get("keys") or []
+
+    async def create_ssh_key(self, name: str, content: str) -> dict:
+        return await self._request(
+            "POST", "/ssh-keys", json={"name": name, "content": content}
+        )

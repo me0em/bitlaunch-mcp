@@ -187,3 +187,28 @@ def test_parse_plans_all_types():
     assert std["plan_type"] == "standard"
     # standard plan available in both regions
     assert {r["region_id"] for r in std["available_regions"]} == {"fra", "nrt"}
+
+
+@respx.mock
+async def test_list_ssh_keys_unwraps_keys():
+    respx.get(f"{BASE_URL}/ssh-keys").mock(
+        return_value=httpx.Response(200, json={"keys": [
+            {"id": "k1", "name": "bitlaunch-mcp", "content": "ssh-ed25519 AAA x"}
+        ]})
+    )
+    keys = await BitLaunchClient("tok").list_ssh_keys()
+    assert keys == [{"id": "k1", "name": "bitlaunch-mcp", "content": "ssh-ed25519 AAA x"}]
+
+
+@respx.mock
+async def test_create_ssh_key():
+    route = respx.post(f"{BASE_URL}/ssh-keys").mock(
+        return_value=httpx.Response(200, json={"id": "k2", "name": "bitlaunch-mcp"})
+    )
+    created = await BitLaunchClient("tok").create_ssh_key(
+        "bitlaunch-mcp", "ssh-ed25519 BBB y"
+    )
+    import json as _json
+    sent = _json.loads(route.calls.last.request.content)
+    assert sent == {"name": "bitlaunch-mcp", "content": "ssh-ed25519 BBB y"}
+    assert created["id"] == "k2"
