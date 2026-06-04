@@ -59,3 +59,89 @@ async def test_get_account_converts_money():
         "servers_used": 1,
         "server_limit": 5,
     }
+
+
+from datetime import datetime, timedelta, timezone
+
+SERVER_JSON = {
+    "id": "abc123",
+    "name": "train-1",
+    "host": 1,
+    "ipv4": "1.2.3.4",
+    "region": "Frankfurt",
+    "size": "vcg-a40-1c-5g-2vram",
+    "sizeDescription": "1/24 GPU 2GB RAM",
+    "image": "2284",
+    "imageDescription": "Ubuntu 24.04 LTS x64",
+    "created": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(),
+    "rate": 164,
+    "status": "ok",
+    "errorText": "",
+    "diskGB": 90,
+}
+
+
+@respx.mock
+async def test_list_servers_bare_array_and_accrued_cost():
+    respx.get(f"{BASE_URL}/servers").mock(
+        return_value=httpx.Response(200, json=[SERVER_JSON])
+    )
+    servers = await BitLaunchClient("tok").list_servers()
+    assert len(servers) == 1
+    s = servers[0]
+    assert s["id"] == "abc123"
+    assert s["ipv4"] == "1.2.3.4"
+    assert s["cost_per_hour_usd"] == 0.164
+    assert 9.9 <= s["uptime_hours"] <= 10.1
+    assert 1.6 <= s["accrued_cost_usd"] <= 1.7  # ~10h * $0.164
+
+
+@respx.mock
+async def test_get_server_unwraps_envelope():
+    respx.get(f"{BASE_URL}/servers/abc123").mock(
+        return_value=httpx.Response(200, json={"server": SERVER_JSON})
+    )
+    s = await BitLaunchClient("tok").get_server("abc123")
+    assert s["name"] == "train-1"
+    assert s["status"] == "ok"
+
+
+@respx.mock
+async def test_create_server_payload_shape():
+    route = respx.post(f"{BASE_URL}/servers").mock(
+        return_value=httpx.Response(200, json=SERVER_JSON)
+    )
+    await BitLaunchClient("tok").create_server(
+        name="train-1",
+        size_id="vcg-a40-1c-5g-2vram",
+        region_id="fra",
+        image_version_id="2284",
+        ssh_key_ids=["key1"],
+        init_script="#!/bin/bash\necho hi",
+    )
+    import json as _json
+    sent = _json.loads(route.calls.last.request.content)["server"]
+    assert sent == {
+        "name": "train-1",
+        "hostID": 1,
+        "HostImageID": "2284",  # capital H — exact API field name
+        "sizeID": "vcg-a40-1c-5g-2vram",
+        "regionID": "fra",
+        "sshKeys": ["key1"],
+        "password": "",
+        "initscript": "#!/bin/bash\necho hi",
+    }
+
+
+@respx.mock
+async def test_destroy_and_restart_paths():
+    d = respx.delete(f"{BASE_URL}/servers/abc123").mock(
+        return_value=httpx.Response(200)
+    )
+    r = respx.post(f"{BASE_URL}/servers/abc123/restart").mock(
+        return_value=httpx.Response(200)
+    )
+    c = BitLaunchClient("tok")
+    await c.destroy_server("abc123")
+    await c.restart_server("abc123")
+    assert d.called and r.called

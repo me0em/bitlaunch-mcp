@@ -59,3 +59,64 @@ class BitLaunchClient:
             "servers_used": d["used"],
             "server_limit": d["limit"],
         }
+
+    @staticmethod
+    def _server_dict(s: dict) -> dict:
+        created = datetime.fromisoformat(s["created"].replace("Z", "+00:00"))
+        uptime_h = max(
+            0.0, (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        )
+        rate_usd = musd_to_usd(s.get("rate", 0))
+        return {
+            "id": s["id"],
+            "name": s["name"],
+            "ipv4": s.get("ipv4", ""),
+            "status": s.get("status", ""),
+            "error_text": s.get("errorText", ""),
+            "region": s.get("region", ""),
+            "size_id": s.get("size", ""),
+            "size": s.get("sizeDescription", ""),
+            "image": s.get("imageDescription", ""),
+            "cost_per_hour_usd": rate_usd,
+            "uptime_hours": round(uptime_h, 2),
+            "accrued_cost_usd": round(rate_usd * uptime_h, 2),
+        }
+
+    async def list_servers(self) -> list[dict]:
+        d = await self._request("GET", "/servers")
+        return [self._server_dict(s) for s in (d or [])]
+
+    async def get_server(self, server_id: str) -> dict:
+        d = await self._request("GET", f"/servers/{server_id}")
+        return self._server_dict(d["server"])
+
+    async def create_server(
+        self,
+        *,
+        name: str,
+        size_id: str,
+        region_id: str,
+        image_version_id: str,
+        ssh_key_ids: list[str],
+        init_script: str = "",
+    ) -> dict:
+        payload = {
+            "server": {
+                "name": name,
+                "hostID": VULTR_HOST_ID,
+                "HostImageID": image_version_id,
+                "sizeID": size_id,
+                "regionID": region_id,
+                "sshKeys": ssh_key_ids,
+                "password": "",
+                "initscript": init_script,
+            }
+        }
+        d = await self._request("POST", "/servers", json=payload)
+        return self._server_dict(d)
+
+    async def destroy_server(self, server_id: str) -> None:
+        await self._request("DELETE", f"/servers/{server_id}")
+
+    async def restart_server(self, server_id: str) -> None:
+        await self._request("POST", f"/servers/{server_id}/restart")
