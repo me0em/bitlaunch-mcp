@@ -1,0 +1,89 @@
+{
+  "hostID": 1,
+  "available": true,
+  "bandwidthCost": 30,
+  "image": [
+    {
+      "id": 0,
+      "name": "Ubuntu",
+      "type": "image",
+      "version": {"id": "2284", "description": "Ubuntu 24.04 LTS x64"},
+      "versions": [
+        {"id": "2284", "description": "Ubuntu 24.04 LTS x64"},
+        {"id": "1743", "description": "Ubuntu 22.04 LTS x64"}
+      ],
+      "unavailableRegions": []
+    }
+  ],
+  "region": [
+    {
+      "id": 9,
+      "name": "Frankfurt",
+      "iso": "de",
+      "subregion": {
+        "id": "fra",
+        "description": "Frankfurt",
+        "slug": "fra",
+        "unavailableSizes": ["vcg-a40-24c-120g-48vram"]
+      },
+      "subregions": []
+    },
+    {
+      "id": 25,
+      "name": "Tokyo",
+      "iso": "jp",
+      "subregion": {
+        "id": "nrt",
+        "description": "Tokyo",
+        "slug": "nrt",
+        "unavailableSizes": [
+          "vcg-a40-1c-5g-2vram",
+          "vcg-a40-24c-120g-48vram"
+        ]
+      },
+      "subregions": []
+    }
+  ],
+  "size": [
+    {
+      "id": "1gb-1vcpu",
+      "slug": "1gb-1vcpu",
+      "bandwidthGB": 1000,
+      "cpuCount": 1,
+      "diskGB": 25,
+      "memoryMB": 1024,
+      "costPerHr": 9,
+      "costPerMonth": 6,
+      "planType": "standard"
+    },
+    {
+      "id": "vcg-a40-1c-5g-2vram",
+      "slug": "vcg-a40-1c-5g-2vram",
+      "bandwidthGB": 3000,
+      "cpuCount": 1,
+      "diskGB": 90,
+      "memoryMB": 5120,
+      "freeText": "1/24 GPU 2GB RAM",
+      "costPerHr": 164,
+      "costPerMonth": 110,
+      "planType": "gpu"
+    },
+    {
+      "id": "vcg-a40-24c-120g-48vram",
+      "slug": "vcg-a40-24c-120g-48vram",
+      "bandwidthGB": 15000,
+      "cpuCount": 24,
+      "diskGB": 1400,
+      "memoryMB": 122880,
+      "freeText": "1 GPU 48GB RAM",
+      "costPerHr": 3721,
+      "costPerMonth": 2500,
+      "planType": "gpu"
+    }
+  ],
+  "planTypes": [
+    {"type": "standard", "name": "Standard", "hardwareGroup": "cpu1"},
+    {"type": "gpu", "name": "Nvidia A40 GPU", "hardwareGroup": "gpu1"}
+  ],
+  "hostOptions": {"rebuild": false, "resize": true, "userScript": true}
+}

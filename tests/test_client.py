@@ -145,3 +145,45 @@ async def test_destroy_and_restart_paths():
     await c.destroy_server("abc123")
     await c.restart_server("abc123")
     assert d.called and r.called
+
+
+import json
+from pathlib import Path
+
+OPTIONS = json.loads(
+    (Path(__file__).parent / "fixtures" / "vultr_options.json").read_text()
+)
+
+
+@respx.mock
+async def test_get_create_options_path():
+    route = respx.get(f"{BASE_URL}/hosts-create-options/1").mock(
+        return_value=httpx.Response(200, json=OPTIONS)
+    )
+    d = await BitLaunchClient("tok").get_create_options()
+    assert route.called
+    assert d["hostID"] == 1
+
+
+def test_parse_plans_gpu_availability():
+    plans = BitLaunchClient.parse_plans(OPTIONS, plan_type="gpu")
+    assert [p["size_id"] for p in plans] == [
+        "vcg-a40-1c-5g-2vram",
+        "vcg-a40-24c-120g-48vram",
+    ]
+    small, big = plans
+    # 2GB slice: blocked in Tokyo, available in Frankfurt
+    assert small["available_regions"] == [{"name": "Frankfurt", "region_id": "fra"}]
+    assert small["cost_per_hour_usd"] == 0.164
+    assert small["description"] == "1/24 GPU 2GB RAM"
+    # full A40: blocked everywhere right now
+    assert big["available_regions"] == []
+
+
+def test_parse_plans_all_types():
+    plans = BitLaunchClient.parse_plans(OPTIONS)
+    assert len(plans) == 3
+    std = plans[0]
+    assert std["plan_type"] == "standard"
+    # standard plan available in both regions
+    assert {r["region_id"] for r in std["available_regions"]} == {"fra", "nrt"}

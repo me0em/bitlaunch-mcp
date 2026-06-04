@@ -115,6 +115,41 @@ class BitLaunchClient:
         d = await self._request("POST", "/servers", json=payload)
         return self._server_dict(d)
 
+    async def get_create_options(self) -> dict:
+        return await self._request("GET", f"/hosts-create-options/{VULTR_HOST_ID}")
+
+    @staticmethod
+    def parse_plans(options: dict, plan_type: str | None = None) -> list[dict]:
+        """Flatten sizes into plans with live per-region availability.
+
+        A size is available in a region unless it appears in the region's
+        subregion.unavailableSizes list.
+        """
+        regions = options.get("region") or []
+        plans = []
+        for s in options.get("size") or []:
+            if plan_type and s.get("planType") != plan_type:
+                continue
+            available_regions = []
+            for r in regions:
+                sub = r.get("subregion") or {}
+                if s["id"] not in (sub.get("unavailableSizes") or []):
+                    available_regions.append(
+                        {"name": r["name"], "region_id": sub["id"]}
+                    )
+            plans.append({
+                "size_id": s["id"],
+                "plan_type": s.get("planType", ""),
+                "description": s.get("freeText", ""),
+                "cpu_count": s.get("cpuCount", 0),
+                "memory_mb": s.get("memoryMB", 0),
+                "disk_gb": s.get("diskGB", 0),
+                "cost_per_hour_usd": musd_to_usd(s.get("costPerHr", 0)),
+                "cost_per_month_usd": s.get("costPerMonth", 0),
+                "available_regions": available_regions,
+            })
+        return plans
+
     async def destroy_server(self, server_id: str) -> None:
         await self._request("DELETE", f"/servers/{server_id}")
 
