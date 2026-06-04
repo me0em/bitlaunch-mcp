@@ -59,3 +59,34 @@ async def run_command(
             }
     finally:
         conn.close()
+
+
+async def upload(
+    host: str,
+    key_path: Path,
+    remote_path: str,
+    local_path: str | None = None,
+    content: str | None = None,
+) -> None:
+    """Upload a local file OR inline text content to remote_path (absolute)."""
+    conn = await _connect(host, key_path)
+    try:
+        async with conn.start_sftp_client() as sftp:
+            if content is not None:
+                async with sftp.open(remote_path, "w") as f:
+                    await f.write(content)
+            else:
+                await sftp.put(local_path, remote_path)
+    finally:
+        conn.close()
+
+
+async def download(
+    host: str, key_path: Path, remote_path: str, local_path: str
+) -> None:
+    conn = await _connect(host, key_path)
+    try:
+        async with conn.start_sftp_client() as sftp:
+            await sftp.get(remote_path, local_path)
+    finally:
+        conn.close()
