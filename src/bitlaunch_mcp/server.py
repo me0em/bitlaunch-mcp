@@ -219,3 +219,132 @@ async def restart_server(server_id: str) -> dict:
     """Reboot a server (running tmux jobs are killed)."""
     await get_client().restart_server(server_id)
     return {"restarted": server_id}
+
+
+async def _resolve_host(server_id: str) -> str:
+    server = await get_client().get_server(server_id)
+    if not server["ipv4"] or server["ipv4"] == "0.0.0.0":
+        raise ToolError(
+            f"Server {server_id} has no IP yet (status: "
+            f"{server['status'] or 'unknown'}). Wait and retry."
+        )
+    return server["ipv4"]
+
+
+def _wrap_ssh_errors(server_id: str, status: str, exc: Exception) -> ToolError:
+    return ToolError(
+        f"SSH to server {server_id} failed: {exc}. Server status: {status}. "
+        f"If it was just created or rebooted, wait a minute and retry."
+    )
+
+
+@mcp.tool
+async def run_command(server_id: str, command: str, timeout_s: int = 120) -> dict:
+    """Run a shell command on the server as root, wait for it to finish.
+    For anything longer than a few minutes use start_job instead.
+    Returns stdout, stderr, exit_code; on timeout timed_out=true with
+    partial output."""
+    host = await _resolve_host(server_id)
+    try:
+        return await ssh.run_command(
+            host, get_config().ssh_key_path, command, timeout_s
+        )
+    except (OSError, asyncssh.Error) as e:
+        srv = await get_client().get_server(server_id)
+        raise _wrap_ssh_errors(server_id, srv["status"], e)
+
+
+@mcp.tool
+async def upload_file(
+    server_id: str,
+    remote_path: str,
+    local_path: str | None = None,
+    content: str | None = None,
+) -> dict:
+    """Upload to the server: either a local file (local_path) or inline text
+    (content) — provide exactly one. remote_path must be absolute,
+    e.g. /root/train.py."""
+    if (local_path is None) == (content is None):
+        raise ToolError("Provide exactly one of local_path or content.")
+    host = await _resolve_host(server_id)
+    try:
+        await ssh.upload(
+            host, get_config().ssh_key_path, remote_path,
+            local_path=local_path, content=content,
+        )
+    except (OSError, asyncssh.Error) as e:
+        srv = await get_client().get_server(server_id)
+        raise _wrap_ssh_errors(server_id, srv["status"], e)
+    return {"uploaded": remote_path}
+
+
+@mcp.tool
+async def download_file(server_id: str, remote_path: str, local_path: str) -> dict:
+    """Download a file from the server to the local machine."""
+    host = await _resolve_host(server_id)
+    try:
+        await ssh.download(
+            host, get_config().ssh_key_path, remote_path, local_path
+        )
+    except (OSError, asyncssh.Error) as e:
+        srv = await get_client().get_server(server_id)
+        raise _wrap_ssh_errors(server_id, srv["status"], e)
+    return {"downloaded": remote_path, "to": local_path}
+
+
+@mcp.tool
+async def start_job(
+    server_id: str, name: str, command: str, workdir: str | None = None
+) -> dict:
+    """Start a long-running command (e.g. training) in a detached tmux
+    session that survives SSH disconnects. Output goes to ~/jobs/<name>.log.
+    Poll progress with get_job. Job names: letters, digits, '-', '_'."""
+    host = await _resolve_host(server_id)
+    try:
+        return await ssh.start_job(
+            host, get_config().ssh_key_path, name, command, workdir
+        )
+    except ValueError as e:
+        raise ToolError(str(e))
+    except (OSError, asyncssh.Error, RuntimeError) as e:
+        srv = await get_client().get_server(server_id)
+        raise _wrap_ssh_errors(server_id, srv["status"], e)
+
+
+@mcp.tool
+async def get_job(server_id: str, name: str, tail: int = 100) -> dict:
+    """Job status: running | exited (with exit_code) | unknown, plus the
+    last `tail` lines of its log."""
+    host = await _resolve_host(server_id)
+    try:
+        return await ssh.get_job(host, get_config().ssh_key_path, name, tail)
+    except ValueError as e:
+        raise ToolError(str(e))
+    except (OSError, asyncssh.Error) as e:
+        srv = await get_client().get_server(server_id)
+        raise _wrap_ssh_errors(server_id, srv["status"], e)
+
+
+@mcp.tool
+async def stop_job(server_id: str, name: str) -> dict:
+    """Kill a running job's tmux session."""
+    host = await _resolve_host(server_id)
+    try:
+        return await ssh.stop_job(host, get_config().ssh_key_path, name)
+    except ValueError as e:
+        raise ToolError(str(e))
+    except (OSError, asyncssh.Error) as e:
+        srv = await get_client().get_server(server_id)
+        raise _wrap_ssh_errors(server_id, srv["status"], e)
+
+
+@mcp.tool
+async def list_jobs(server_id: str) -> dict:
+    """All jobs on the server: running tmux sessions and exited jobs with
+    their exit codes."""
+    host = await _resolve_host(server_id)
+    try:
+        return await ssh.list_jobs(host, get_config().ssh_key_path)
+    except (OSError, asyncssh.Error) as e:
+        srv = await get_client().get_server(server_id)
+        raise _wrap_ssh_errors(server_id, srv["status"], e)

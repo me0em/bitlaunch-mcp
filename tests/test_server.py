@@ -173,3 +173,90 @@ async def test_destroy_and_list_tools(fake):
         await c.call_tool("destroy_server", {"server_id": "srv1"})
     assert len(listed.data) == 1
     assert fake.destroyed == ["srv1"]
+
+
+@pytest.fixture
+def fake_with_server(fake):
+    fake.servers.append({
+        "id": "srv1", "name": "x", "ipv4": "9.9.9.9", "status": "ok",
+        "error_text": "", "region": "fra", "size_id": "1gb-1vcpu",
+        "size": "", "image": "", "cost_per_hour_usd": 0.009,
+        "uptime_hours": 1.0, "accrued_cost_usd": 0.01,
+    })
+    return fake
+
+
+async def test_run_command_tool_resolves_ip(fake_with_server, monkeypatch):
+    calls = []
+
+    async def fake_run(host, key_path, command, timeout_s=120):
+        calls.append((host, command, timeout_s))
+        return {"stdout": "ok", "stderr": "", "exit_code": 0, "timed_out": False}
+
+    monkeypatch.setattr(server.ssh, "run_command", fake_run)
+    async with Client(server.mcp) as c:
+        res = await c.call_tool("run_command", {
+            "server_id": "srv1", "command": "echo ok", "timeout_s": 5,
+        })
+    assert res.data["exit_code"] == 0
+    assert calls == [("9.9.9.9", "echo ok", 5)]
+
+
+async def test_run_command_tool_no_ip_yet(fake):
+    fake.servers.append({
+        "id": "srv1", "name": "x", "ipv4": "", "status": "creating",
+        "error_text": "", "region": "fra", "size_id": "1gb-1vcpu",
+        "size": "", "image": "", "cost_per_hour_usd": 0.009,
+        "uptime_hours": 0.0, "accrued_cost_usd": 0.0,
+    })
+    async with Client(server.mcp) as c:
+        with pytest.raises(ToolError, match="creating"):
+            await c.call_tool("run_command", {
+                "server_id": "srv1", "command": "echo ok",
+            })
+
+
+async def test_ssh_failure_wrapped_with_status(fake_with_server, monkeypatch):
+    async def fake_run(host, key_path, command, timeout_s=120):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(server.ssh, "run_command", fake_run)
+    async with Client(server.mcp) as c:
+        with pytest.raises(ToolError, match="SSH .* failed.*status.*ok"):
+            await c.call_tool("run_command", {
+                "server_id": "srv1", "command": "echo ok",
+            })
+
+
+async def test_upload_requires_exactly_one_source(fake_with_server):
+    async with Client(server.mcp) as c:
+        with pytest.raises(ToolError, match="exactly one"):
+            await c.call_tool("upload_file", {
+                "server_id": "srv1", "remote_path": "/root/x",
+            })
+
+
+async def test_job_tools_wiring(fake_with_server, monkeypatch):
+    started, queried = [], []
+
+    async def fake_start(host, key_path, name, command, workdir=None):
+        started.append((host, name, command, workdir))
+        return {"job": name, "status": "running", "log": f"~/jobs/{name}.log"}
+
+    async def fake_get(host, key_path, name, tail=100):
+        queried.append((name, tail))
+        return {"status": "running", "exit_code": None, "log_tail": "epoch 1\n"}
+
+    monkeypatch.setattr(server.ssh, "start_job", fake_start)
+    monkeypatch.setattr(server.ssh, "get_job", fake_get)
+    async with Client(server.mcp) as c:
+        await c.call_tool("start_job", {
+            "server_id": "srv1", "name": "train1",
+            "command": "python train.py", "workdir": "/root/proj",
+        })
+        res = await c.call_tool("get_job", {
+            "server_id": "srv1", "name": "train1", "tail": 20,
+        })
+    assert started == [("9.9.9.9", "train1", "python train.py", "/root/proj")]
+    assert queried == [("train1", 20)]
+    assert res.data["status"] == "running"
