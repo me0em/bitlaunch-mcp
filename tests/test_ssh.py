@@ -148,3 +148,59 @@ async def test_download(fake_sftp_conn, tmp_path):
     await ssh.download("1.2.3.4", tmp_path / "k", "/root/out.pt",
                        str(tmp_path / "out.pt"))
     assert fake_sftp_conn.sftp.gets == [("/root/out.pt", str(tmp_path / "out.pt"))]
+
+
+def test_job_name_validation():
+    with pytest.raises(ValueError, match="job name"):
+        ssh.build_start_script("bad name; rm -rf /", "echo hi")
+    with pytest.raises(ValueError, match="job name"):
+        ssh.build_job_query("$(evil)", 10)
+
+
+def test_build_start_script():
+    script = ssh.build_start_script("train1", "python train.py", workdir="/root/proj")
+    assert "mkdir -p $HOME/jobs" in script
+    assert "rm -f $HOME/jobs/train1.exit" in script
+    assert "tmux new-session -d -s train1 " in script
+    # command wrapped: cd, redirect to log, exit code capture
+    assert "cd /root/proj" in script
+    assert "(python train.py)" in script
+    assert "$HOME/jobs/train1.log" in script
+    assert "echo $? >$HOME/jobs/train1.exit" in script
+
+
+def test_parse_job_query_running():
+    out = "RUNNING\n---LOG---\nepoch 1\nepoch 2\n"
+    assert ssh.parse_job_query(out) == {
+        "status": "running", "exit_code": None, "log_tail": "epoch 1\nepoch 2\n",
+    }
+
+
+def test_parse_job_query_exited():
+    out = "EXITED 0\n---LOG---\ndone\n"
+    assert ssh.parse_job_query(out) == {
+        "status": "exited", "exit_code": 0, "log_tail": "done\n",
+    }
+
+
+def test_parse_job_query_unknown():
+    out = "UNKNOWN\n---LOG---\n"
+    parsed = ssh.parse_job_query(out)
+    assert parsed["status"] == "unknown"
+    assert parsed["exit_code"] is None
+
+
+async def test_start_and_get_job_wiring(monkeypatch, tmp_path):
+    sent = []
+
+    async def fake_run(host, key_path, command, timeout_s=120):
+        sent.append(command)
+        return {"stdout": "RUNNING\n---LOG---\nhi\n", "stderr": "",
+                "exit_code": 0, "timed_out": False}
+
+    monkeypatch.setattr(ssh, "run_command", fake_run)
+    await ssh.start_job("1.2.3.4", tmp_path / "k", "train1", "echo hi")
+    res = await ssh.get_job("1.2.3.4", tmp_path / "k", "train1", tail=50)
+    assert res["status"] == "running"
+    assert "tmux new-session" in sent[0]
+    assert "tail -n 50" in sent[1]

@@ -90,3 +90,95 @@ async def download(
             await sftp.get(remote_path, local_path)
     finally:
         conn.close()
+
+
+def _check_job_name(name: str) -> None:
+    if not JOB_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid job name {name!r}: use only letters, digits, '-' and '_'."
+        )
+
+
+def build_start_script(name: str, command: str, workdir: str | None = None) -> str:
+    _check_job_name(name)
+    log = f"$HOME/jobs/{name}.log"
+    exitf = f"$HOME/jobs/{name}.exit"
+    body = f"({command})"
+    if workdir:
+        body = f"(cd {shlex.quote(workdir)} && {body})"
+    wrapped = f"{body} >{log} 2>&1; echo $? >{exitf}"
+    return (
+        f"mkdir -p $HOME/jobs && rm -f {exitf} && "
+        f"tmux new-session -d -s {name} {shlex.quote(wrapped)}"
+    )
+
+
+def build_job_query(name: str, tail: int) -> str:
+    _check_job_name(name)
+    return (
+        f"if tmux has-session -t ={name} 2>/dev/null; then echo RUNNING; "
+        f"elif [ -f $HOME/jobs/{name}.exit ]; then "
+        f"echo EXITED $(cat $HOME/jobs/{name}.exit); "
+        f"else echo UNKNOWN; fi; "
+        f"echo ---LOG---; tail -n {int(tail)} $HOME/jobs/{name}.log 2>/dev/null"
+    )
+
+
+def parse_job_query(stdout: str) -> dict:
+    header, _, log_tail = stdout.partition("---LOG---\n")
+    parts = header.strip().split()
+    status = parts[0].lower() if parts else "unknown"
+    exit_code = None
+    if status == "exited" and len(parts) > 1 and parts[1].lstrip("-").isdigit():
+        exit_code = int(parts[1])
+    return {"status": status, "exit_code": exit_code, "log_tail": log_tail}
+
+
+async def start_job(
+    host: str, key_path: Path, name: str, command: str,
+    workdir: str | None = None,
+) -> dict:
+    script = build_start_script(name, command, workdir)
+    res = await run_command(host, key_path, script, timeout_s=30)
+    if res["exit_code"] != 0:
+        raise RuntimeError(
+            f"Failed to start job {name!r}: {res['stderr'] or res['stdout']}"
+        )
+    return {"job": name, "status": "running", "log": f"~/jobs/{name}.log"}
+
+
+async def get_job(
+    host: str, key_path: Path, name: str, tail: int = 100
+) -> dict:
+    res = await run_command(host, key_path, build_job_query(name, tail), timeout_s=30)
+    return parse_job_query(res["stdout"])
+
+
+async def stop_job(host: str, key_path: Path, name: str) -> dict:
+    _check_job_name(name)
+    await run_command(host, key_path, f"tmux kill-session -t ={name}", timeout_s=30)
+    return {"job": name, "status": "stopped"}
+
+
+async def list_jobs(host: str, key_path: Path) -> dict:
+    script = (
+        "tmux list-sessions -F '#S' 2>/dev/null; echo ---EXITED---; "
+        "for f in $HOME/jobs/*.exit; do "
+        '[ -f "$f" ] && echo "$(basename "$f" .exit) $(cat "$f")"; done'
+    )
+    res = await run_command(host, key_path, script, timeout_s=30)
+    running_part, _, exited_part = res["stdout"].partition("---EXITED---\n")
+    running = [line for line in running_part.splitlines() if line.strip()]
+    exited = {}
+    for line in exited_part.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].lstrip("-").isdigit():
+            exited[parts[0]] = int(parts[1])
+    # a finished job leaves an .exit file; one still running has a session
+    return {
+        "running": running,
+        "exited": [
+            {"job": n, "exit_code": c} for n, c in exited.items()
+            if n not in running
+        ],
+    }
