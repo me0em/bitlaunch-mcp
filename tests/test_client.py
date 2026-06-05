@@ -212,3 +212,96 @@ async def test_create_ssh_key():
     sent = _json.loads(route.calls.last.request.content)
     assert sent == {"name": "bitlaunch-mcp", "content": "ssh-ed25519 BBB y"}
     assert created["id"] == "k2"
+
+
+TX_JSON = {
+    "id": "tx1",
+    "userid": "u1",
+    "date": "2026-06-05T12:00:00.000Z",
+    "address": "2N8PXuPYFUNf987Tj22GFj4Yyk6zNTMAaSs",
+    "cryptoSymbol": "BTC",
+    "amountUsd": 20,
+    "amountCrypto": "0.00274643",
+    "status": "Pending",
+    "statusUrl": "https://pay.bitlaunch.io/invoice/inv1",
+    "qrCodeUrl": "https://pay.bitlaunch.io/qr/inv1",
+}
+
+TX_NORMALIZED = {
+    "id": "tx1",
+    "created": "2026-06-05T12:00:00.000Z",
+    "crypto_symbol": "BTC",
+    "amount_usd": 20,
+    "amount_crypto": "0.00274643",
+    "address": "2N8PXuPYFUNf987Tj22GFj4Yyk6zNTMAaSs",
+    "status": "Pending",
+    "invoice_url": "https://pay.bitlaunch.io/invoice/inv1",
+    "qr_code_url": "https://pay.bitlaunch.io/qr/inv1",
+}
+
+
+@respx.mock
+async def test_create_transaction_payload_and_normalization():
+    route = respx.post(f"{BASE_URL}/transactions").mock(
+        return_value=httpx.Response(200, json=TX_JSON)
+    )
+    tx = await BitLaunchClient("tok").create_transaction(20, "BTC")
+    sent = json.loads(route.calls.last.request.content)
+    # amountUsd is plain USD (gobitlaunch CreateTransactionOptions), not mUSD
+    assert sent == {
+        "amountUsd": 20, "cryptoSymbol": "BTC", "lightningNetwork": False,
+    }
+    assert tx == TX_NORMALIZED
+
+
+@respx.mock
+async def test_list_transactions_pagination_and_envelope():
+    route = respx.get(f"{BASE_URL}/transactions").mock(
+        return_value=httpx.Response(200, json={"history": [TX_JSON], "total": 1})
+    )
+    res = await BitLaunchClient("tok").list_transactions(page=2, items=10)
+    assert route.calls.last.request.url.params["page"] == "2"
+    assert route.calls.last.request.url.params["items"] == "10"
+    assert res == {"transactions": [TX_NORMALIZED], "total": 1}
+
+
+@respx.mock
+async def test_list_transactions_empty_history():
+    respx.get(f"{BASE_URL}/transactions").mock(
+        return_value=httpx.Response(200, json={"history": None, "total": 0})
+    )
+    res = await BitLaunchClient("tok").list_transactions()
+    assert res == {"transactions": [], "total": 0}
+
+
+@respx.mock
+async def test_get_transaction_invoice_url_fallback():
+    """Docs' transaction object variant: paymentPath + processorid, no statusUrl."""
+    legacy = {
+        "id": "tx2", "created": "2026-06-05T08:00:00.000Z",
+        "address": "addr", "cryptoSymbol": "LTC", "amountUsd": 5,
+        "amountCrypto": "0.07", "status": "Confirming",
+        "paymentPath": "/invoice/inv2", "processorid": "bl",
+    }
+    respx.get(f"{BASE_URL}/transactions/tx2").mock(
+        return_value=httpx.Response(200, json=legacy)
+    )
+    tx = await BitLaunchClient("tok").get_transaction("tx2")
+    assert tx["invoice_url"] == "https://pay.bitlaunch.io/invoice/inv2"
+    assert tx["created"] == "2026-06-05T08:00:00.000Z"  # falls back to "created"
+    assert tx["status"] == "Confirming"
+    assert tx["qr_code_url"] == ""
+
+
+@respx.mock
+async def test_get_transaction_unknown_processor_empty_invoice_url():
+    respx.get(f"{BASE_URL}/transactions/tx3").mock(
+        return_value=httpx.Response(200, json={
+            "id": "tx3", "date": "2026-06-05T08:00:00.000Z", "address": "a",
+            "cryptoSymbol": "ETH", "amountUsd": 5, "amountCrypto": "0.002",
+            "status": "Pending", "paymentPath": "/invoice/x",
+            "processorid": "other",
+        })
+    )
+    tx = await BitLaunchClient("tok").get_transaction("tx3")
+    assert tx["invoice_url"] == ""

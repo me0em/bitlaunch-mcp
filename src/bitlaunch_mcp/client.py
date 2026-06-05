@@ -2,7 +2,8 @@
 
 API quirks (verified against the official Go client, gobitlaunch):
 - Auth header is literally "Bearer: <token>" — colon included.
-- All money amounts are integers in mUSD (1/1000 USD).
+- All money amounts are integers in mUSD (1/1000 USD) — except transaction
+  amountUsd, which is plain USD.
 - Create-server image field serializes as "HostImageID" (capital H).
 """
 from __future__ import annotations
@@ -164,3 +165,46 @@ class BitLaunchClient:
         return await self._request(
             "POST", "/ssh-keys", json={"name": name, "content": content}
         )
+
+    # Invoice URL prefix by payment processor (Transaction Object docs).
+    _PROCESSOR_URLS = {"bl": "https://pay.bitlaunch.io"}
+
+    @classmethod
+    def _transaction_dict(cls, t: dict) -> dict:
+        invoice_url = t.get("statusUrl", "")
+        if not invoice_url and t.get("paymentPath"):
+            prefix = cls._PROCESSOR_URLS.get(t.get("processorid", ""))
+            invoice_url = f"{prefix}{t['paymentPath']}" if prefix else ""
+        return {
+            "id": t["id"],
+            "created": t.get("date") or t.get("created", ""),
+            "crypto_symbol": t.get("cryptoSymbol", ""),
+            "amount_usd": t.get("amountUsd", 0),
+            "amount_crypto": t.get("amountCrypto", ""),
+            "address": t.get("address", ""),
+            "status": t.get("status", ""),
+            "invoice_url": invoice_url,
+            "qr_code_url": t.get("qrCodeUrl", ""),
+        }
+
+    async def create_transaction(self, amount_usd: int, crypto_symbol: str) -> dict:
+        # Unlike the rest of the API, amountUsd here is plain USD, not mUSD.
+        d = await self._request("POST", "/transactions", json={
+            "amountUsd": amount_usd,
+            "cryptoSymbol": crypto_symbol,
+            "lightningNetwork": False,
+        })
+        return self._transaction_dict(d)
+
+    async def list_transactions(self, page: int = 1, items: int = 25) -> dict:
+        d = await self._request("GET", f"/transactions?page={page}&items={items}")
+        return {
+            "transactions": [
+                self._transaction_dict(t) for t in (d or {}).get("history") or []
+            ],
+            "total": (d or {}).get("total", 0),
+        }
+
+    async def get_transaction(self, transaction_id: str) -> dict:
+        d = await self._request("GET", f"/transactions/{transaction_id}")
+        return self._transaction_dict(d)
