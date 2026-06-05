@@ -64,6 +64,48 @@ async def get_account() -> dict:
     return await get_client().get_account()
 
 
+VALID_CRYPTO = ("BTC", "LTC", "ETH")
+
+
+@mcp.tool
+async def create_transaction(amount_usd: int, crypto_symbol: str) -> dict:
+    """Create a crypto top-up invoice for the account balance. Nothing is
+    charged automatically: the user must manually pay the returned
+    invoice_url (or send amount_crypto to address; qr_code_url renders a
+    scannable code). crypto_symbol: BTC | LTC | ETH. Status starts as
+    Pending — track it with get_transaction. Balance updates only after
+    the payment confirms."""
+    cfg = get_config()
+    symbol = crypto_symbol.upper()
+    if symbol not in VALID_CRYPTO:
+        raise ToolError(
+            f"crypto_symbol must be one of: {', '.join(VALID_CRYPTO)}."
+        )
+    if amount_usd <= 0:
+        raise ToolError("amount_usd must be positive.")
+    if amount_usd > cfg.max_topup_usd:
+        raise ToolError(
+            f"Top-up of ${amount_usd} exceeds the limit of "
+            f"${cfg.max_topup_usd:g} (BITLAUNCH_MAX_TOPUP_USD). Raise it "
+            f"to allow larger invoices."
+        )
+    return await get_client().create_transaction(amount_usd, symbol)
+
+
+@mcp.tool
+async def list_transactions(page: int = 1, items: int = 25) -> dict:
+    """Paginated top-up transaction history (newest first) with statuses
+    and invoice links. Returns {transactions: [...], total}."""
+    return await get_client().list_transactions(page=page, items=items)
+
+
+@mcp.tool
+async def get_transaction(transaction_id: str) -> dict:
+    """Status of one top-up transaction (Pending -> Confirming -> Complete).
+    Use after create_transaction to check whether the payment confirmed."""
+    return await get_client().get_transaction(transaction_id)
+
+
 @mcp.tool
 async def list_gpu_plans() -> list[dict]:
     """GPU plans on Vultr with LIVE availability. A plan can only be created

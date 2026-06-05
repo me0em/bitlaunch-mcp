@@ -23,6 +23,8 @@ class FakeBitLaunch:
         self.keys = []
         self.created_payloads = []
         self.destroyed = []
+        self.transactions = []
+        self.created_transactions = []
 
     async def get_account(self):
         return self.account
@@ -64,6 +66,30 @@ class FakeBitLaunch:
         key = {"id": "k1", "name": name, "content": content}
         self.keys.append(key)
         return key
+
+    async def create_transaction(self, amount_usd, crypto_symbol):
+        self.created_transactions.append((amount_usd, crypto_symbol))
+        tx = {
+            "id": f"tx{len(self.transactions) + 1}",
+            "created": "2026-06-05T12:00:00.000Z",
+            "crypto_symbol": crypto_symbol, "amount_usd": amount_usd,
+            "amount_crypto": "0.001", "address": "addr1",
+            "status": "Pending",
+            "invoice_url": "https://pay.bitlaunch.io/invoice/inv1",
+            "qr_code_url": "https://pay.bitlaunch.io/qr/inv1",
+        }
+        self.transactions.append(tx)
+        return tx
+
+    async def list_transactions(self, page=1, items=25):
+        return {"transactions": self.transactions,
+                "total": len(self.transactions)}
+
+    async def get_transaction(self, transaction_id):
+        for t in self.transactions:
+            if t["id"] == transaction_id:
+                return t
+        raise AssertionError(f"unknown transaction {transaction_id}")
 
 
 @pytest.fixture
@@ -260,3 +286,53 @@ async def test_job_tools_wiring(fake_with_server, monkeypatch):
     assert started == [("9.9.9.9", "train1", "python train.py", "/root/proj")]
     assert queried == [("train1", 20)]
     assert res.data["status"] == "running"
+
+
+async def test_create_transaction_happy_path(fake):
+    async with Client(server.mcp) as c:
+        res = await c.call_tool("create_transaction", {
+            "amount_usd": 20, "crypto_symbol": "btc",
+        })
+    assert res.data["status"] == "Pending"
+    assert res.data["invoice_url"] == "https://pay.bitlaunch.io/invoice/inv1"
+    # symbol is upper-cased before hitting the API
+    assert fake.created_transactions == [(20, "BTC")]
+
+
+async def test_create_transaction_rejects_over_cap(fake):
+    # fixture Config uses the default max_topup_usd=50.0
+    async with Client(server.mcp) as c:
+        with pytest.raises(ToolError, match="MAX_TOPUP_USD"):
+            await c.call_tool("create_transaction", {
+                "amount_usd": 51, "crypto_symbol": "BTC",
+            })
+    assert fake.created_transactions == []
+
+
+async def test_create_transaction_rejects_bad_symbol(fake):
+    async with Client(server.mcp) as c:
+        with pytest.raises(ToolError, match="BTC, LTC, ETH"):
+            await c.call_tool("create_transaction", {
+                "amount_usd": 20, "crypto_symbol": "DOGE",
+            })
+    assert fake.created_transactions == []
+
+
+async def test_create_transaction_rejects_non_positive(fake):
+    async with Client(server.mcp) as c:
+        with pytest.raises(ToolError, match="positive"):
+            await c.call_tool("create_transaction", {
+                "amount_usd": 0, "crypto_symbol": "BTC",
+            })
+
+
+async def test_list_and_get_transaction_tools(fake):
+    async with Client(server.mcp) as c:
+        await c.call_tool("create_transaction", {
+            "amount_usd": 20, "crypto_symbol": "BTC",
+        })
+        listed = await c.call_tool("list_transactions", {})
+        got = await c.call_tool("get_transaction", {"transaction_id": "tx1"})
+    assert listed.data["total"] == 1
+    assert listed.data["transactions"][0]["id"] == "tx1"
+    assert got.data["id"] == "tx1"
