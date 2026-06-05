@@ -129,7 +129,7 @@ Reboot. Running tmux jobs are killed.
 ## Tools: transactions
 
 ### `create_transaction(amount_usd, crypto_symbol)`
-Create a crypto top-up invoice for the account balance. Nothing is charged automatically — the user must manually pay the returned `invoice_url` (or send `amount_crypto` to `address`; `qr_code_url` renders a scannable QR code). Supported `crypto_symbol` values: `BTC`, `LTC`, `ETH` (case-insensitive).
+Create a crypto top-up invoice for the account balance. Nothing is charged automatically — the user must manually pay the returned `invoice_url` (or send `amount_crypto` to `address`; `qr_code_url` renders a scannable QR code). `amount_usd` must be a whole-dollar integer. Supported `crypto_symbol` values: `BTC`, `LTC`, `ETH` (case-insensitive).
 
 Returns: `id`, `created`, `crypto_symbol`, `amount_usd`, `amount_crypto`, `address`, `status`, `invoice_url`, `qr_code_url`.
 
@@ -141,7 +141,7 @@ Guardrail: invoices larger than `BITLAUNCH_MAX_TOPUP_USD` (default `$50`) are re
 Paginated top-up history (newest first). Returns `{transactions: [...], total}`.
 
 ### `get_transaction(transaction_id)`
-Status of one top-up transaction. Status lifecycle: `Pending` → `Confirming` (payment seen, waiting for confirmations) → confirmed (balance updated). Use after `create_transaction` to check whether the payment has settled.
+Status of one top-up transaction. Status lifecycle: `Pending` → `Confirming` while the payment settles; the account balance updates once the payment confirms on-chain. Use after `create_transaction` to check whether the payment has settled.
 
 ## Tools: remote execution
 
