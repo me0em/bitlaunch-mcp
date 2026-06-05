@@ -88,6 +88,7 @@ All configuration is via environment variables:
 | `BITLAUNCH_API_KEY` | — (required) | BitLaunch API token |
 | `BITLAUNCH_MAX_COST_PER_HOUR` | `1.0` | guardrail: refuse to create servers pricier than this ($/hr) |
 | `BITLAUNCH_MAX_SERVERS` | `2` | guardrail: max concurrent servers on the account |
+| `BITLAUNCH_MAX_TOPUP_USD` | `50` | guardrail: refuse top-up invoices larger than this (USD) |
 | `BITLAUNCH_SSH_KEY_PATH` | `~/.bitlaunch-mcp/id_ed25519` | local SSH key (auto-generated if missing) |
 
 ---
@@ -124,6 +125,23 @@ Permanently delete the server and **stop billing**. Unsaved data is lost — `do
 
 ### `restart_server(server_id)`
 Reboot. Running tmux jobs are killed.
+
+## Tools: transactions
+
+### `create_transaction(amount_usd, crypto_symbol)`
+Create a crypto top-up invoice for the account balance. Nothing is charged automatically — the user must manually pay the returned `invoice_url` (or send `amount_crypto` to `address`; `qr_code_url` renders a scannable QR code). Supported `crypto_symbol` values: `BTC`, `LTC`, `ETH` (case-insensitive).
+
+Returns: `id`, `created`, `crypto_symbol`, `amount_usd`, `amount_crypto`, `address`, `status`, `invoice_url`, `qr_code_url`.
+
+Status starts as `Pending` — poll with `get_transaction`. Balance updates only after the payment confirms on-chain.
+
+Guardrail: invoices larger than `BITLAUNCH_MAX_TOPUP_USD` (default `$50`) are refused with a descriptive error.
+
+### `list_transactions(page=1, items=25)`
+Paginated top-up history (newest first). Returns `{transactions: [...], total}`.
+
+### `get_transaction(transaction_id)`
+Status of one top-up transaction. Status lifecycle: `Pending` → `Confirming` (payment seen, waiting for confirmations) → confirmed (balance updated). Use after `create_transaction` to check whether the payment has settled.
 
 ## Tools: remote execution
 
@@ -175,7 +193,7 @@ The live test always destroys the server in a `finally` block, even when asserti
 - **Vultr only** (BitLaunch hostID 1). BitLaunch also proxies DigitalOcean and Linode — the client is parameterized by host ID, but only Vultr is tested and wired up.
 - **GPU driver install is best-effort.** Vultr's fractional vGPU slices may require GRID drivers that plain Ubuntu images don't ship. `create_server(wait=true)` reports `ready: true` only after `nvidia-smi` succeeds; if it times out, diagnose with `run_command(server_id, "nvidia-smi")` or pick a different plan.
 - **No persistent SSH sessions / interactive shells** — by design. Long work belongs in tmux jobs.
-- Domains/DNS, DDoS protection, resize/rebuild, and crypto top-ups are out of scope; manage those at https://app.bitlaunch.io.
+- Domains/DNS, DDoS protection, and resize/rebuild are out of scope; manage those at https://app.bitlaunch.io.
 
 ## License
 
