@@ -101,8 +101,9 @@ async def list_transactions(page: int = 1, items: int = 25) -> dict:
 
 @mcp.tool
 async def get_transaction(transaction_id: str) -> dict:
-    """Status of one top-up transaction (Pending -> Confirming -> Complete).
-    Use after create_transaction to check whether the payment confirmed."""
+    """Status of one top-up transaction (starts Pending, then Confirming
+    while the payment settles). Use after create_transaction to check
+    whether the payment confirmed and the balance updated."""
     return await get_client().get_transaction(transaction_id)
 
 
