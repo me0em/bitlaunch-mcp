@@ -27,3 +27,12 @@ def test_overrides():
 def test_missing_api_key_raises():
     with pytest.raises(RuntimeError, match="BITLAUNCH_API_KEY"):
         load_config({})
+
+
+def test_max_topup_default_and_override():
+    cfg = load_config({"BITLAUNCH_API_KEY": "tok"})
+    assert cfg.max_topup_usd == 50.0
+    cfg = load_config({
+        "BITLAUNCH_API_KEY": "tok", "BITLAUNCH_MAX_TOPUP_USD": "200",
+    })
+    assert cfg.max_topup_usd == 200.0
