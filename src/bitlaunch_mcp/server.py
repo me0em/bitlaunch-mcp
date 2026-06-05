@@ -172,11 +172,13 @@ async def create_server(
         )
 
     account = await client.get_account()
-    if account["balance_usd"] < price * 24:
+    if account["balance_usd"] < price * cfg.min_balance_hours:
         raise ToolError(
-            f"Balance ${account['balance_usd']} is less than 24h of "
-            f"{size_id} (${round(price * 24, 2)}). Top up at "
-            f"https://app.bitlaunch.io first."
+            f"Balance ${account['balance_usd']} is less than "
+            f"{cfg.min_balance_hours:g}h of {size_id} "
+            f"(${round(price * cfg.min_balance_hours, 2)}). Top up at "
+            f"https://app.bitlaunch.io first, or lower "
+            f"BITLAUNCH_MIN_BALANCE_HOURS."
         )
 
     key_id = await _ensure_ssh_key(client, cfg)
