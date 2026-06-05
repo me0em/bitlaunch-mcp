@@ -219,9 +219,9 @@ async def create_server(
         raise ToolError(
             f"Balance ${account['balance_usd']} is less than "
             f"{cfg.min_balance_hours:g}h of {size_id} "
-            f"(${round(price * cfg.min_balance_hours, 2)}). Top up at "
-            f"https://app.bitlaunch.io first, or lower "
-            f"BITLAUNCH_MIN_BALANCE_HOURS."
+            f"(${round(price * cfg.min_balance_hours, 2)}). Create a top-up "
+            f"invoice with create_transaction, top up at "
+            f"https://app.bitlaunch.io, or lower BITLAUNCH_MIN_BALANCE_HOURS."
         )
 
     key_id = await _ensure_ssh_key(client, cfg)
