@@ -2,7 +2,7 @@
 
 **MCP server that lets AI agents rent GPU machines and run training on them.**
 
-Wraps the [BitLaunch](https://bitlaunch.io) API (Vultr host) into 15 [Model Context Protocol](https://modelcontextprotocol.io) tools, so an auto-research agent — Claude Code, Hermes, or any MCP client — can do the full loop without a human in it:
+Wraps the [BitLaunch](https://bitlaunch.io) API (Vultr host) into 18 [Model Context Protocol](https://modelcontextprotocol.io) tools, so an auto-research agent — Claude Code, Hermes, or any MCP client — can do the full loop without a human in it:
 
 ```
 list_gpu_plans → create_server → upload_file → start_job → get_job (poll) → download_file → destroy_server
@@ -11,7 +11,8 @@ list_gpu_plans → create_server → upload_file → start_job → get_job (poll
 - 🖥 **Provisioning** — list live GPU/CPU plan availability, create/destroy/restart servers, account balance & burn rate
 - 🔑 **Zero-config SSH** — an ed25519 key is generated and registered with BitLaunch automatically on first use
 - 🏃 **Remote execution** — run commands, upload/download files, launch long training runs in detached tmux sessions that survive disconnects
-- 💸 **Spending guardrails** — hard limits on $/hr per server, concurrent server count, and minimum balance, enforced server-side before any money is spent
+- 💸 **Spending guardrails** — hard limits on $/hr per server, concurrent server count, minimum balance, and top-up invoice size, enforced server-side before any money is spent
+- 💳 **Crypto top-ups** — the agent can generate a BTC/LTC/ETH invoice when the balance runs low and hand you the payment link; nothing is charged without you paying it
 - 🔌 **Two transports** — stdio (Claude Code / Claude Desktop) and streamable HTTP (Hermes, remote agents)
 
 GPU inventory is Nvidia A40 (full cards and fractional vGPU slices), from ~$0.16/hr for a 2 GB VRAM slice. BitLaunch is prepaid (crypto top-ups), so the worst-case blast radius is your balance.
@@ -89,6 +90,7 @@ All configuration is via environment variables:
 | `BITLAUNCH_MAX_COST_PER_HOUR` | `1.0` | guardrail: refuse to create servers pricier than this ($/hr) |
 | `BITLAUNCH_MAX_SERVERS` | `2` | guardrail: max concurrent servers on the account |
 | `BITLAUNCH_MAX_TOPUP_USD` | `50` | guardrail: refuse top-up invoices larger than this (USD) |
+| `BITLAUNCH_MIN_BALANCE_HOURS` | `24` | guardrail: require balance to cover at least this many hours of the plan before creating a server |
 | `BITLAUNCH_SSH_KEY_PATH` | `~/.bitlaunch-mcp/id_ed25519` | local SSH key (auto-generated if missing) |
 
 ---
@@ -171,7 +173,9 @@ Kill a job's tmux session; list running sessions and exited jobs with exit codes
 
 1. the plan costs more than `BITLAUNCH_MAX_COST_PER_HOUR`
 2. the account already runs `BITLAUNCH_MAX_SERVERS` servers
-3. the balance covers less than 24h of the requested plan
+3. the balance covers less than `BITLAUNCH_MIN_BALANCE_HOURS` (default 24h) of the requested plan
+
+`create_transaction` refuses invoices larger than `BITLAUNCH_MAX_TOPUP_USD`.
 
 Every refusal message tells the agent which env variable to raise, so a human stays in the loop for limit changes.
 
